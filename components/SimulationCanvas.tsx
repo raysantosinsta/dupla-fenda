@@ -33,7 +33,6 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
 
     if (observer) {
       // Classical / Particle-like: Sum of two Gaussians
-      const peakOffset = (slitDist * L) / (2 * 1500); // Scaling factor for visual gap
       const topPeak = Math.exp(-Math.pow(relativeY - slitDist/2, 2) / 1000);
       const botPeak = Math.exp(-Math.pow(relativeY + slitDist/2, 2) / 1000);
       return (topPeak + botPeak) * envelope;
@@ -49,7 +48,6 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
   // Rejection Sampling to pick a landing spot based on probability
   const generateTargetY = useCallback(() => {
     let y = 0;
-    let p = 0;
     let maxIter = 100;
     
     do {
@@ -73,17 +71,87 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
 
     const particleColor = config.observerActive ? '#ef4444' : '#22d3ee'; // Red for observed, Cyan for quantum
 
-    const newParticle: Particle = {
-      id: particleIdCounter.current++,
-      x: SOURCE_X,
-      y: CANVAS_HEIGHT / 2,
-      vx: 4, // Speed
-      vy: 0,
-      targetY: generateTargetY(),
-      color: particleColor,
-      phase: 'source-to-slit'
-    };
-    particlesRef.current.push(newParticle);
+    if (config.observerActive) {
+      // ============================================
+      // DETECTOR LIGADO - Comportamento de Partícula
+      // ============================================
+      // A partícula JÁ ESCOLHE O CAMINHO imediatamente ao sair da fonte
+      const originSlit = Math.random() > 0.5 ? 'top' : 'bottom';
+      
+      // A partícula já nasce NA LINHA DIREITA em direção à fenda escolhida
+      // Não tem linha contínua - já é um ponto individual desde a origem
+      const slitY = CANVAS_HEIGHT / 2 + (originSlit === 'top' ? -config.slitDistance / 2 : config.slitDistance / 2);
+      
+      // Calcula a inclinação para ir direto para a fenda escolhida
+      const dx = SLIT_X - SOURCE_X;
+      const dy = slitY - CANVAS_HEIGHT / 2;
+      const timeToSlit = dx / 4; // vx = 4
+      const vy = dy / timeToSlit;
+
+      const newParticle: Particle = {
+        id: particleIdCounter.current++,
+        x: SOURCE_X,
+        y: CANVAS_HEIGHT / 2, // Começa no centro da fonte
+        vx: 4,
+        vy: vy, // Velocidade vertical calculada para ir direto à fenda
+        targetY: generateTargetY(),
+        color: particleColor,
+        phase: 'source-to-slit',
+        originSlit: originSlit,
+        twinId: undefined
+      };
+      
+      particlesRef.current.push(newParticle);
+    } else {
+      // ============================================
+      // DETECTOR DESLIGADO - Comportamento Ondulatório
+      // ============================================
+      // Cria DUAS partículas (representando a onda passando pelas duas fendas)
+      const baseId = particleIdCounter.current;
+      
+      // Calcula as velocidades para cada caminho
+      const dx = SLIT_X - SOURCE_X;
+      const timeToSlit = dx / 4; // vx = 4
+      
+      // Posições Y das fendas
+      const topSlitY = CANVAS_HEIGHT / 2 - config.slitDistance / 2;
+      const bottomSlitY = CANVAS_HEIGHT / 2 + config.slitDistance / 2;
+      
+      // Velocidades verticais para cada caminho
+      const topVy = (topSlitY - CANVAS_HEIGHT / 2) / timeToSlit;
+      const bottomVy = (bottomSlitY - CANVAS_HEIGHT / 2) / timeToSlit;
+      
+      // Partícula da fenda superior
+      const topParticle: Particle = {
+        id: baseId,
+        x: SOURCE_X,
+        y: CANVAS_HEIGHT / 2, // Começa no centro da fonte
+        vx: 4,
+        vy: topVy, // Velocidade calculada para ir à fenda superior
+        targetY: generateTargetY(),
+        color: particleColor,
+        phase: 'source-to-slit',
+        originSlit: 'top',
+        twinId: baseId + 1
+      };
+      
+      // Partícula da fenda inferior
+      const bottomParticle: Particle = {
+        id: baseId + 1,
+        x: SOURCE_X,
+        y: CANVAS_HEIGHT / 2, // Começa no centro da fonte
+        vx: 4,
+        vy: bottomVy, // Velocidade calculada para ir à fenda inferior
+        targetY: generateTargetY(),
+        color: particleColor,
+        phase: 'source-to-slit',
+        originSlit: 'bottom',
+        twinId: baseId
+      };
+      
+      particleIdCounter.current += 2;
+      particlesRef.current.push(topParticle, bottomParticle);
+    }
   }, [config, isRunning, generateTargetY]);
 
   const updateParticles = useCallback(() => {
@@ -95,24 +163,17 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
       // Movement Logic
       if (p.phase === 'source-to-slit') {
         p.x += p.vx;
+        p.y += p.vy; // Atualiza Y com a velocidade vertical
         
         // Approaching Slit
         if (p.x >= SLIT_X) {
           p.phase = 'slit-to-screen';
           
-          // Determine path if observer is active (collapse)
-          if (config.observerActive) {
-            // It goes through top or bottom based on targetY proximity roughly
-            // Or purely random 50/50 for the "which-path" knowledge
-            const isTop = Math.random() > 0.5;
-            p.y = CANVAS_HEIGHT / 2 + (isTop ? -config.slitDistance / 2 : config.slitDistance / 2);
-            p.originSlit = isTop ? 'top' : 'bottom';
-          } else {
-            // Wave nature: it passes "through" center effectively for the calculation, 
-            // but visually we spread them slightly to look like they emerge from slits
-            // For simplicity, we keep Y continuous or split visual logic.
-            // Let's make it emerge from the center of the slit barrier for visualization.
-            p.y = CANVAS_HEIGHT / 2; 
+          // Ajusta posição Y para exatamente a fenda (correção de pequenos erros)
+          if (p.originSlit === 'top') {
+            p.y = CANVAS_HEIGHT / 2 - config.slitDistance / 2;
+          } else if (p.originSlit === 'bottom') {
+            p.y = CANVAS_HEIGHT / 2 + config.slitDistance / 2;
           }
 
           // Calculate velocity vector to hit targetY at SCREEN_X
@@ -127,20 +188,40 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
 
         // Hit Screen
         if (p.x >= SCREEN_X) {
-          onParticleLand(p.y);
-          particles.splice(i, 1); // Remove from array
+          // Para detector desligado: apenas uma das partículas gêmeas conta
+          // Para detector ligado: todas contam
+          if (!config.observerActive) {
+            // Detector desligado: só conta partículas com ID par
+            if (p.id % 2 === 0) {
+              onParticleLand(p.y);
+            }
+          } else {
+            // Detector ligado: todas contam
+            onParticleLand(p.y);
+          }
+          
+          // Remove esta partícula
+          particles.splice(i, 1);
+          
+          // Se existir uma partícula gêmea (detector desligado), remove também
+          if (p.twinId !== undefined) {
+            const twinIndex = particles.findIndex(part => part.id === p.twinId);
+            if (twinIndex !== -1) {
+              particles.splice(twinIndex, 1);
+            }
+          }
         }
       }
     }
-  }, [config, isRunning, onParticleLand]);
+  }, [config, onParticleLand]);
 
   const draw = useCallback((ctx: CanvasRenderingContext2D) => {
     // Clear Canvas
-    ctx.fillStyle = '#0f172a'; // matches bg-slate-900
+    ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Draw Source
-    ctx.fillStyle = '#fbbf24'; // Amber
+    ctx.fillStyle = '#fbbf24';
     ctx.beginPath();
     ctx.arc(SOURCE_X, CANVAS_HEIGHT / 2, 8, 0, Math.PI * 2);
     ctx.fill();
@@ -156,7 +237,7 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
     // Draw Slit Barrier
     ctx.fillStyle = '#334155';
     const barrierW = 10;
-    const slitH = 20; // Slit gap height
+    const slitH = 20;
     const d = config.slitDistance;
 
     // Top Barrier Part
@@ -172,7 +253,7 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
       ctx.beginPath();
       ctx.arc(SLIT_X + 20, CANVAS_HEIGHT / 2 - d/2 - 30, 10, 0, Math.PI * 2);
       ctx.fill();
-      // Beam
+      
       ctx.strokeStyle = 'rgba(239, 68, 68, 0.3)';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -193,16 +274,23 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
 
     // Draw Wavefronts (Optional visualization)
     if (config.showWaves && !config.observerActive) {
-        ctx.strokeStyle = 'rgba(34, 211, 238, 0.1)'; // Cyan transparent
+        ctx.strokeStyle = 'rgba(34, 211, 238, 0.1)';
         ctx.lineWidth = 2;
         const time = Date.now() / 200;
         
-        // Source waves
+        // Source waves - DUAS FRENTES DE ONDA (superior e inferior)
         for(let r=0; r<SLIT_X - SOURCE_X; r+=20) {
             const radius = (r + time * 10) % (SLIT_X - SOURCE_X);
             if (radius < 10) continue;
+            
+            // Onda superior
             ctx.beginPath();
             ctx.arc(SOURCE_X, CANVAS_HEIGHT/2, radius, -0.5, 0.5);
+            ctx.stroke();
+            
+            // Onda inferior (apenas para mostrar a dualidade)
+            ctx.beginPath();
+            ctx.arc(SOURCE_X, CANVAS_HEIGHT/2, radius, 0.5, 1.5);
             ctx.stroke();
         }
 
@@ -228,6 +316,24 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
       ctx.fill();
     });
 
+    // Draw subtle guide lines (opcional, para referência)
+    ctx.strokeStyle = config.observerActive ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 211, 238, 0.1)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    
+    // Linhas dos caminhos possíveis
+    ctx.beginPath();
+    ctx.moveTo(SOURCE_X, CANVAS_HEIGHT/2);
+    ctx.lineTo(SLIT_X, CANVAS_HEIGHT/2 - d/2);
+    ctx.stroke();
+    
+    ctx.beginPath();
+    ctx.moveTo(SOURCE_X, CANVAS_HEIGHT/2);
+    ctx.lineTo(SLIT_X, CANVAS_HEIGHT/2 + d/2);
+    ctx.stroke();
+    
+    ctx.setLineDash([]);
+
   }, [config]);
 
   // Main Loop
@@ -239,8 +345,7 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = ({ config, onParticleL
       const ctx = canvasRef.current.getContext('2d');
       if (!ctx) return;
 
-      // Spawning logic rate limiter
-      if (timestamp - lastSpawnTime > (1000 / (config.emissionRate * 60))) { // approximate check
+      if (timestamp - lastSpawnTime > (1000 / (config.emissionRate * 60))) {
         spawnParticle();
         lastSpawnTime = timestamp;
       }

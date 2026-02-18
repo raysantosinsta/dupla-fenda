@@ -16,6 +16,7 @@ export interface Particle {
   color: string;
   phase: 'source-to-slit' | 'slit-to-screen' | 'landed';
   originSlit?: 'top' | 'bottom'; // Which slit it passed through (only known if observer active)
+  twinId: any
 }
 
 export interface HistogramData {
